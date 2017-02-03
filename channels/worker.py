@@ -2,12 +2,15 @@ from __future__ import unicode_literals
 
 import fnmatch
 import logging
+import multiprocessing
 import signal
 import sys
+import threading
 import time
 
-from .exceptions import ConsumeLater
+from .exceptions import ChannelSocketException, ConsumeLater, DenyConnection
 from .message import Message
+from .signals import consumer_finished, consumer_started, worker_ready
 from .utils import name_that_thing
 
 logger = logging.getLogger('django.channels')
@@ -65,6 +68,12 @@ class Worker(object):
             ]
         return channels
 
+    def ready(self):
+        """
+        Called once worker setup is complete.
+        """
+        worker_ready.send(sender=self)
+
     def run(self):
         """
         Tries to continually dispatch messages to consumers.
@@ -104,7 +113,17 @@ class Worker(object):
                 self.callback(channel, message)
             try:
                 logger.debug("Dispatching message on %s to %s", channel, name_that_thing(consumer))
+                # Send consumer started to manage lifecycle stuff
+                consumer_started.send(sender=self.__class__, environ={})
+                # Run consumer
                 consumer(message, **kwargs)
+            except DenyConnection:
+                # They want to deny a WebSocket connection.
+                if message.channel.name != "websocket.connect":
+                    raise ValueError("You cannot DenyConnection from a non-websocket.connect handler.")
+                message.reply_channel.send({"close": True})
+            except ChannelSocketException as e:
+                e.run(message)
             except ConsumeLater:
                 # They want to not handle it yet. Re-inject it with a number-of-tries marker.
                 content['__retries__'] = content.get("__retries__", 0) + 1
@@ -127,3 +146,44 @@ class Worker(object):
                         break
             except:
                 logger.exception("Error processing message with consumer %s:", name_that_thing(consumer))
+            finally:
+                # Send consumer finished so DB conns close etc.
+                consumer_finished.send(sender=self.__class__)
+
+
+class WorkerGroup(Worker):
+    """
+    Group several workers together in threads. Manages the sub-workers,
+    terminating them if a signal is received.
+    """
+
+    def __init__(self, *args, **kwargs):
+        n_threads = kwargs.pop('n_threads', multiprocessing.cpu_count()) - 1
+        super(WorkerGroup, self).__init__(*args, **kwargs)
+        kwargs['signal_handlers'] = False
+        self.workers = [Worker(*args, **kwargs) for ii in range(n_threads)]
+
+    def sigterm_handler(self, signo, stack_frame):
+        self.termed = True
+        for wkr in self.workers:
+            wkr.termed = True
+        logger.info("Shutdown signal received while busy, waiting for "
+                    "loop termination")
+
+    def ready(self):
+        super(WorkerGroup, self).ready()
+        for wkr in self.workers:
+            wkr.ready()
+
+    def run(self):
+        """
+        Launch sub-workers before running.
+        """
+        self.threads = [threading.Thread(target=self.workers[ii].run)
+                        for ii in range(len(self.workers))]
+        for t in self.threads:
+            t.start()
+        super(WorkerGroup, self).run()
+        # Join threads once completed.
+        for t in self.threads:
+            t.join()

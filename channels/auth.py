@@ -1,7 +1,6 @@
 import functools
 
 from django.contrib import auth
-from django.contrib.auth.models import AnonymousUser
 
 from .sessions import channel_session, http_session
 
@@ -30,6 +29,8 @@ def channel_session_user(func):
         if not hasattr(message, "channel_session"):
             raise ValueError("Did not see a channel session to get auth from")
         if message.channel_session is None:
+            # Inner import to avoid reaching into models before load complete
+            from django.contrib.auth.models import AnonymousUser
             message.user = AnonymousUser()
         # Otherwise, be a bit naughty and make a fake Request with just
         # a "session" attribute (later on, perhaps refactor contrib.auth to
@@ -59,6 +60,8 @@ def http_session_user(func):
         if not hasattr(message, "http_session"):
             raise ValueError("Did not see a http session to get auth from")
         if message.http_session is None:
+            # Inner import to avoid reaching into models before load complete
+            from django.contrib.auth.models import AnonymousUser
             message.user = AnonymousUser()
         # Otherwise, be a bit naughty and make a fake Request with just
         # a "session" attribute (later on, perhaps refactor contrib.auth to
@@ -79,6 +82,7 @@ def channel_session_user_from_http(func):
     """
     @http_session_user
     @channel_session
+    @functools.wraps(func)
     def inner(message, *args, **kwargs):
         if message.http_session is not None:
             transfer_user(message.http_session, message.channel_session)

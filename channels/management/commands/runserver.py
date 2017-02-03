@@ -2,9 +2,9 @@ import datetime
 import sys
 import threading
 
+from daphne.server import Server, build_endpoint_description_strings
 from django.conf import settings
-from django.core.management.commands.runserver import \
-    Command as RunserverCommand
+from django.core.management.commands.runserver import Command as RunserverCommand
 from django.utils import six
 from django.utils.encoding import get_system_encoding
 
@@ -23,10 +23,13 @@ class Command(RunserverCommand):
             help='Tells Django not to run a worker thread; you\'ll need to run one separately.')
         parser.add_argument('--noasgi', action='store_false', dest='use_asgi', default=True,
             help='Run the old WSGI-based runserver rather than the ASGI-based one')
+        parser.add_argument('--http_timeout', action='store', dest='http_timeout', type=int, default=60,
+            help='Specify the daphane http_timeout interval in seconds (default: 60)')
 
     def handle(self, *args, **options):
         self.verbosity = options.get("verbosity", 1)
         self.logger = setup_logger('django.channels', self.verbosity)
+        self.http_timeout = options.get("http_timeout", 60)
         super(Command, self).handle(*args, **options)
 
     def inner_run(self, *args, **options):
@@ -64,22 +67,26 @@ class Command(RunserverCommand):
 
         # Launch workers as subthreads
         if options.get("run_worker", True):
-            for _ in range(4):
+            worker_count = 4 if options.get("use_threading", True) else 1
+            for _ in range(worker_count):
                 worker = WorkerThread(self.channel_layer, self.logger)
                 worker.daemon = True
                 worker.start()
         # Launch server in 'main' thread. Signals are disabled as it's still
         # actually a subthread under the autoreloader.
         self.logger.debug("Daphne running, listening on %s:%s", self.addr, self.port)
+
+        # build the endpoint description string from host/port options
+        endpoints = build_endpoint_description_strings(host=self.addr, port=self.port)
         try:
-            from daphne.server import Server
             Server(
                 channel_layer=self.channel_layer,
-                host=self.addr,
-                port=int(self.port),
+                endpoints=endpoints,
                 signal_handlers=not options['use_reloader'],
                 action_logger=self.log_action,
-                http_timeout=60,  # Shorter timeout than normal as it's dev
+                http_timeout=self.http_timeout,
+                ws_protocols=getattr(settings, 'CHANNELS_WS_PROTOCOLS', None),
+                root_path=getattr(settings, 'FORCE_SCRIPT_NAME', '') or '',
             ).run()
             self.logger.debug("Daphne exited")
         except KeyboardInterrupt:
@@ -119,6 +126,10 @@ class Command(RunserverCommand):
             msg += "WebSocket CONNECT %(path)s [%(client)s]\n" % details
         elif protocol == "websocket" and action == "disconnected":
             msg += "WebSocket DISCONNECT %(path)s [%(client)s]\n" % details
+        elif protocol == "websocket" and action == "connecting":
+            msg += "WebSocket HANDSHAKING %(path)s [%(client)s]\n" % details
+        elif protocol == "websocket" and action == "rejected":
+            msg += "WebSocket REJECT %(path)s [%(client)s]\n" % details
 
         sys.stderr.write(msg)
 
@@ -149,5 +160,6 @@ class WorkerThread(threading.Thread):
     def run(self):
         self.logger.debug("Worker thread running")
         worker = Worker(channel_layer=self.channel_layer, signal_handlers=False)
+        worker.ready()
         worker.run()
         self.logger.debug("Worker thread exited")

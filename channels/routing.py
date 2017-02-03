@@ -1,7 +1,7 @@
 from __future__ import unicode_literals
 
-import re
 import importlib
+import re
 
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import six
@@ -53,6 +53,12 @@ class Router(object):
         # called once, thankfully.
         from .handler import ViewConsumer
         self.add_route(Route("http.request", http_consumer or ViewConsumer()))
+        # We also add a no-op websocket.connect consumer to the bottom, as the
+        # spec requires that this is consumed, but Channels does not. Any user
+        # consumer will override this one. Same for websocket.receive.
+        self.add_route(Route("websocket.connect", connect_consumer))
+        self.add_route(Route("websocket.receive", null_consumer))
+        self.add_route(Route("websocket.disconnect", null_consumer))
 
     @classmethod
     def resolve_routing(cls, routing):
@@ -237,6 +243,19 @@ class Include(object):
         for entry in self.routing:
             result.update(entry.channel_names())
         return result
+
+
+def null_consumer(*args, **kwargs):
+    """
+    Standard no-op consumer.
+    """
+
+
+def connect_consumer(message, *args, **kwargs):
+    """
+    Accept-all-connections websocket.connect consumer
+    """
+    message.reply_channel.send({"accept": True})
 
 
 # Lowercase standard to match urls.py

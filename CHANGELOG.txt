@@ -1,3 +1,171 @@
+Full release notes, with more details and upgrade information, are available at:
+https://channels.readthedocs.io/en/latest/releases
+
+
+1.0.3 (2017-02-01)
+------------------
+
+* Database connections are no longer force-closed after each test is run.
+
+* Channel sessions are not re-saved if they're empty even if they're marked as
+  modified, allowing logout to work correctly.
+
+* WebsocketDemultiplexer now correctly does sessions for the second/third/etc.
+  connect and disconnect handlers.
+
+* Request reading timeouts now correctly return 408 rather than erroring out.
+
+* The ``rundelay`` delay server now only polls the database once per second,
+  and this interval is configurable with the ``--sleep`` option.
+
+
+1.0.2 (2017-01-12)
+------------------
+
+* Websockets can now be closed from anywhere using the new ``WebsocketCloseException``.
+  There is also a generic ``ChannelSocketException`` so you can do custom behaviours.
+
+* Calling ``Channel.send`` or ``Group.send`` from outside a consumer context
+  (i.e. in tests or management commands) will once again send the message immediately.
+
+* The base implementation of databinding now correctly only calls ``group_names(instance)``,
+  as documented.
+
+
+1.0.1 (2017-01-09)
+------------------
+
+* WebSocket generic views now accept connections by default in their connect
+  handler for better backwards compatibility.
+
+
+1.0.0 (2017-01-08)
+------------------
+
+* BREAKING CHANGE: WebSockets must now be explicitly accepted or denied.
+  See https://channels.readthedocs.io/en/latest/releases/1.0.0.html for more.
+
+* BREAKING CHANGE: Demultiplexers have been overhauled to directly dispatch
+  messages rather than using channels to new consumers. Consult the docs on
+  generic consumers for more: https://channels.readthedocs.io/en/latest/generics.html
+
+* BREAKING CHANGE: Databinding now operates from implicit group membership,
+  where your code just has to say what groups would be used and Channels will
+  work out if it's a creation, modification or removal from a client's
+  perspective, including with permissions.
+
+* Delay protocol server ships with Channels providing a specification on how
+  to delay jobs until later and a reference implementation.
+
+* Serializers can now specify fields as `__all__` to auto-include all fields.
+
+* Various other small fixes.
+
+0.17.3 (2016-10-12)
+-------------------
+
+* channel_session now also rehydrates the http session with an option
+
+* request.META['PATH_INFO'] is now present
+
+* runserver shows Daphne log messages
+
+* runserver --nothreading only starts a single worker thread
+
+* Databinding changed to call group_names dynamically and imply changed/created from that;
+  other small changes to databinding, and more changes likely.
+
+
+0.17.2 (2016-08-04)
+-------------------
+
+* New CHANNELS_WS_PROTOCOLS setting if you want Daphne to accept certain
+  subprotocols
+
+* WebsocketBindingWithMembers allows serialization of non-fields on instances
+
+* Class-based consumers have an .as_route() method that lets you skip using
+  route_class
+
+* Bindings now work if loaded after app ready state
+
+
+0.17.1 (2016-07-22)
+-------------------
+
+* Bindings now require that `fields` is defined on the class body so all fields
+  are not sent by default. To restore old behaviour, set it to ['__all__']
+
+* Bindings can now be declared after app.ready() has been called and still work.
+
+* Binding payloads now include the model name as `appname.modelname`.
+
+* A worker_ready signal now gets triggered when `runworker` starts consuming
+  messages. It does not fire from within `runserver`.
+
+
+0.17.0 (2016-07-19)
+-------------------
+
+* Data Binding framework is added, which allows easy tying of model changes
+  to WebSockets (and other protocols) and vice-versa.
+
+* Standardised WebSocket/JSON multiplexing introduced
+
+* WebSocket generic consumers now have a 'close' argument on send/group_send
+
+
+0.16.1 (2016-07-12)
+-------------------
+
+* WebsocketConsumer now has a http_user option for auto user sessions.
+
+* consumer_started and consumer_finished signals are now available under
+  channels.signals.
+
+* Database connections are closed whenever a consumer finishes.
+
+
+0.16.0 (2016-07-06)
+-------------------
+
+* websocket.connect and websocket.receive are now consumed by a no-op consumer
+  by default if you don't specify anything to consume it, to bring Channels in
+  line with the ASGI rules on WebSocket backpressure.
+
+* You no longer need to call super's setUp in ChannelTestCase.
+
+
+0.15.1 (2016-06-29)
+-------------------
+
+* Class based consumers now have a self.kwargs
+
+* Fixed bug where empty streaming responses did not send headers or status code
+
+
+0.15.0 (2016-06-22)
+-------------------
+
+* Query strings are now decoded entirely by Django. Must be used with Daphne
+  0.13 or higher.
+
+
+0.14.3 (2016-06-21)
+-------------------
+
+* + signs in query strings are no longer double-decoded
+
+* Message now has .values(), .keys() and .items() to match dict
+
+
+0.14.2 (2016-06-16)
+-------------------
+
+* Class based consumers now have built-in channel_session and
+  channel_session_user support
+
+
 0.14.1 (2016-06-09)
 -------------------
 

@@ -5,15 +5,19 @@ import random
 import string
 from functools import wraps
 
-from django.test.testcases import TestCase
-from .. import DEFAULT_CHANNEL_LAYER
-from ..routing import Router, include
-from ..asgi import channel_layers, ChannelLayerWrapper
-from ..message import Message
 from asgiref.inmemory import ChannelLayer as InMemoryChannelLayer
+from django.db import close_old_connections
+from django.test.testcases import TestCase, TransactionTestCase
+
+from .. import DEFAULT_CHANNEL_LAYER
+from ..asgi import ChannelLayerWrapper, channel_layers
+from ..channel import Group
+from ..message import Message
+from ..routing import Router, include
+from ..signals import consumer_finished, consumer_started
 
 
-class ChannelTestCase(TestCase):
+class ChannelTestCaseMixin(object):
     """
     TestCase subclass that provides easy methods for testing channels using
     an in-memory backend to capture messages, and assertion methods to allow
@@ -26,11 +30,11 @@ class ChannelTestCase(TestCase):
     # Customizable so users can test multi-layer setups
     test_channel_aliases = [DEFAULT_CHANNEL_LAYER]
 
-    def setUp(self):
+    def _pre_setup(self):
         """
         Initialises in memory channel layer for the duration of the test
         """
-        super(ChannelTestCase, self).setUp()
+        super(ChannelTestCaseMixin, self)._pre_setup()
         self._old_layers = {}
         for alias in self.test_channel_aliases:
             # Swap in an in memory layer wrapper and keep the old one around
@@ -43,7 +47,7 @@ class ChannelTestCase(TestCase):
                 )
             )
 
-    def tearDown(self):
+    def _post_teardown(self):
         """
         Undoes the channel rerouting
         """
@@ -51,7 +55,7 @@ class ChannelTestCase(TestCase):
             # Swap in an in memory layer wrapper and keep the old one around
             channel_layers.set(alias, self._old_layers[alias])
         del self._old_layers
-        super(ChannelTestCase, self).tearDown()
+        super(ChannelTestCaseMixin, self)._post_teardown()
 
     def get_next_message(self, channel, alias=DEFAULT_CHANNEL_LAYER, require=False):
         """
@@ -67,6 +71,14 @@ class ChannelTestCase(TestCase):
             else:
                 return None
         return Message(content, recv_channel, channel_layers[alias])
+
+
+class ChannelTestCase(ChannelTestCaseMixin, TestCase):
+    pass
+
+
+class TransactionChannelTestCase(ChannelTestCaseMixin, TransactionTestCase):
+    pass
 
 
 class Client(object):
@@ -94,6 +106,13 @@ class Client(object):
             return
         return Message(content, recv_channel, channel_layers[self.alias])
 
+    def get_consumer_by_channel(self, channel):
+        message = Message({'text': ''}, channel, self.channel_layer)
+        match = self.channel_layer.router.match(message)
+        if match:
+            consumer, kwargs = match
+            return consumer
+
     def send(self, to, content={}):
         """
         Send a message to a channel.
@@ -112,7 +131,14 @@ class Client(object):
             match = self.channel_layer.router.match(message)
             if match:
                 consumer, kwargs = match
-                return consumer(message, **kwargs)
+                try:
+                    consumer_started.send(sender=self.__class__)
+                    return consumer(message, **kwargs)
+                finally:
+                    # Copy Django's workaround so we don't actually close DB conns
+                    consumer_finished.disconnect(close_old_connections)
+                    consumer_finished.send(sender=self.__class__)
+                    consumer_finished.connect(close_old_connections)
             elif fail_on_none:
                 raise AssertionError("Can't find consumer for message %s" % message)
         elif fail_on_none:
@@ -120,18 +146,21 @@ class Client(object):
 
     def send_and_consume(self, channel, content={}, fail_on_none=True):
         """
-        Reproduce full live cycle of the message
+        Reproduce full life cycle of the message
         """
         self.send(channel, content)
         return self.consume(channel, fail_on_none=fail_on_none)
 
     def receive(self):
-        """self.get_next_message(self.reply_channel)
+        """
         Get content of next message for reply channel if message exists
         """
         message = self.get_next_message(self.reply_channel)
         if message:
             return message.content
+
+    def join_group(self, group_name):
+        Group(group_name).add(self.reply_channel)
 
 
 class apply_routes(object):

@@ -1,16 +1,21 @@
-
 import copy
+import json
 
+import six
 from django.apps import apps
 from django.conf import settings
+
+from django.http.cookie import SimpleCookie
 
 from ..sessions import session_for_reply_channel
 from .base import Client
 
+json_module = json  # alias for using at functions with json kwarg
+
 
 class HttpClient(Client):
     """
-    Channel http/ws client abstraction that provides easy methods for testing full live cycle of message in channels
+    Channel http/ws client abstraction that provides easy methods for testing full life cycle of message in channels
     with determined reply channel, auth opportunity, cookies, headers and so on
     """
 
@@ -56,7 +61,16 @@ class HttpClient(Client):
             self._session = session_for_reply_channel(self.reply_channel)
         return self._session
 
-    def send(self, to, content={}, path='/'):
+    def receive(self, json=True):
+        """
+        Return text content of a message for client channel and decoding it if json kwarg is set
+        """
+        content = super(HttpClient, self).receive()
+        if content and json and 'text' in content and isinstance(content['text'], six.string_types):
+            return json_module.loads(content['text'])
+        return content.get('text', content) if content else None
+
+    def send(self, to, content={}, text=None, path='/'):
         """
         Send a message to a channel.
         Adds reply_channel name and channel_session to the message.
@@ -65,7 +79,28 @@ class HttpClient(Client):
         content.setdefault('reply_channel', self.reply_channel)
         content.setdefault('path', path)
         content.setdefault('headers', self.headers)
+        text = text or content.get('text', None)
+        if text is not None:
+            if not isinstance(text, six.string_types):
+                content['text'] = json.dumps(text)
+            else:
+                content['text'] = text
         self.channel_layer.send(to, content)
+
+    def send_and_consume(self, channel, content={}, text=None, path='/', fail_on_none=True, check_accept=True):
+        """
+        Reproduce full life cycle of the message
+        """
+        self.send(channel, content, text, path)
+        return self.consume(channel, fail_on_none=fail_on_none, check_accept=check_accept)
+
+    def consume(self, channel, fail_on_none=True, check_accept=True):
+        result = super(HttpClient, self).consume(channel, fail_on_none=fail_on_none)
+        if channel == "websocket.connect" and check_accept:
+            received = self.receive(json=False)
+            if received != {"accept": True}:
+                raise AssertionError("Connection rejected: %s != '{accept: True}'" % received)
+        return result
 
     def login(self, **credentials):
         """
@@ -100,4 +135,10 @@ class HttpClient(Client):
 
 def _encoded_cookies(cookies):
     """Encode dict of cookies to ascii string"""
-    return ('&'.join('{0}={1}'.format(k, v) for k, v in cookies.items())).encode("ascii")
+
+    cookie_encoder = SimpleCookie()
+
+    for k, v in cookies.items():
+        cookie_encoder[k] = v
+
+    return cookie_encoder.output(header='', sep=';').encode("ascii")

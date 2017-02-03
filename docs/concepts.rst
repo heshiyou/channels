@@ -143,8 +143,8 @@ this model. The first, and more obvious one, is the dispatching of work to
 consumers - a message gets added to a channel, and then any one of the workers
 can pick it up and run the consumer.
 
-The second kind of channel, however, is used for responses. Notably, these only
-have one thing listening on them - the interface server. Each response channel
+The second kind of channel, however, is used for replies. Notably, these only
+have one thing listening on them - the interface server. Each reply channel
 is individually named and has to be routed back to the interface server where
 its client is terminated.
 
@@ -156,9 +156,9 @@ the message - but response channels would have to have their messages sent
 to the channel server they're listening on.
 
 For this reason, Channels treats these as two different *channel types*, and
-denotes a *response channel* by having the channel name contain
+denotes a *reply channel* by having the channel name contain
 the character ``!`` - e.g. ``http.response!f5G3fE21f``. *Normal
-channels* do not contain it, but along with the rest of the response
+channels* do not contain it, but along with the rest of the reply
 channel name, they must contain only the characters ``a-z A-Z 0-9 - _``,
 and be less than 200 characters long.
 
@@ -172,7 +172,7 @@ Groups
 
 Because channels only deliver to a single listener, they can't do broadcast;
 if you want to send a message to an arbitrary group of clients, you need to
-keep track of which response channels of those you wish to send to.
+keep track of which reply channels of those you wish to send to.
 
 If I had a liveblog where I wanted to push out updates whenever a new post is
 saved, I could register a handler for the ``post_save`` signal and keep a
@@ -182,11 +182,13 @@ set of channels (here, using Redis) to send updates to::
 
     @receiver(post_save, sender=BlogUpdate)
     def send_update(sender, instance, **kwargs):
-        # Loop through all response channels and send the update
+        # Loop through all reply channels and send the update
         for reply_channel in redis_conn.smembers("readers"):
             Channel(reply_channel).send({
-                "id": instance.id,
-                "content": instance.content,
+                "text": json.dumps({
+                    "id": instance.id,
+                    "content": instance.content
+                })
             })
 
     # Connected to websocket.connect
@@ -199,7 +201,7 @@ the ``readers`` set when they disconnect. We could add a consumer that
 listens to ``websocket.disconnect`` to do that, but we'd also need to
 have some kind of expiry in case an interface server is forced to quit or
 loses power before it can send disconnect signals - your code will never
-see any disconnect notification but the response channel is completely
+see any disconnect notification but the reply channel is completely
 invalid and messages you send there will sit there until they expire.
 
 Because the basic design of channels is stateless, the channel server has no
@@ -223,8 +225,10 @@ abstraction as a core concept called Groups::
     @receiver(post_save, sender=BlogUpdate)
     def send_update(sender, instance, **kwargs):
         Group("liveblog").send({
-            "id": instance.id,
-            "content": instance.content,
+            "text": json.dumps({
+                "id": instance.id,
+                "content": instance.content
+            })
         })
 
     # Connected to websocket.connect
@@ -245,7 +249,7 @@ Of course, you should still remove things from the group on disconnect if you
 can; the expiry code is there to catch cases where the disconnect message
 doesn't make it for some reason.
 
-Groups are generally only useful for response channels (ones containing
+Groups are generally only useful for reply channels (ones containing
 the character ``!``), as these are unique-per-client, but can be used for
 normal channels as well if you wish.
 
@@ -257,7 +261,7 @@ start thinking about them. Remember, Django provides some channels
 but you're free to make and consume your own, and all channels are
 network-transparent.
 
-One thing channels do not, however, is guarantee delivery. If you need
+One thing channels do not do, however, is guarantee delivery. If you need
 certainty that tasks will complete, use a system designed for this with 
 retries and persistence (e.g. Celery), or alternatively make a management
 command that checks for completion and re-submits a message to the channel

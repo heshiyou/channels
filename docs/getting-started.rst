@@ -11,7 +11,7 @@ patterns and caveats.
 First Consumers
 ---------------
 
-When you run Django out of the box, it will be set up in the default layout -
+When you first run Django with Channels installed, it will be set up in the default layout -
 where all HTTP requests (on the ``http.request`` channel) are routed to the
 Django view layer - nothing will be different to how things worked in the past
 with a WSGI-based Django, and your views and static file serving (from
@@ -60,7 +60,7 @@ Here's what that looks like::
             "ROUTING": "myproject.routing.channel_routing",
         },
     }
-..
+
 ::
 
     # In routing.py
@@ -105,7 +105,7 @@ for ``http.request`` - and make this WebSocket consumer instead::
 
     def ws_message(message):
         # ASGI WebSocket packet-received and send-packet message types
-        # both have a "text" key for their textual data. 
+        # both have a "text" key for their textual data.
         message.reply_channel.send({
             "text": message.content['text'],
         })
@@ -128,9 +128,11 @@ When it gets that message, it takes the ``reply_channel`` attribute from it, whi
 is the unique response channel for that client, and sends the same content
 back to the client using its ``send()`` method.
 
-Let's test it! Run ``runserver``, open a browser and put the following into the
-JavaScript console to open a WebSocket and send some data down it (you might
-need to change the socket address if you're using a development VM or similar)::
+Let's test it! Run ``runserver``, open a browser, navigate to a page on the server
+(you can't use any page's console because of origin restrictions), and put the
+following into the JavaScript console to open a WebSocket and send some data
+down it (you might need to change the socket address if you're using a
+development VM or similar)::
 
     // Note that the path doesn't matter for routing; any WebSocket
     // connection gets bumped over to WebSocket consumers
@@ -141,6 +143,8 @@ need to change the socket address if you're using a development VM or similar)::
     socket.onopen = function() {
         socket.send("hello world");
     }
+    // Call onopen directly if socket is already open
+    if (socket.readyState == WebSocket.OPEN) socket.onopen();
 
 You should see an alert come back immediately saying "hello world" - your
 message has round-tripped through the server and come back to trigger the alert.
@@ -161,6 +165,7 @@ disconnect, like this::
 
     # Connected to websocket.connect
     def ws_add(message):
+        message.reply_channel.send({"accept": True})
         Group("chat").add(message.reply_channel)
 
     # Connected to websocket.disconnect
@@ -199,6 +204,7 @@ get the message. Here's all the code::
 
     # Connected to websocket.connect
     def ws_add(message):
+        message.reply_channel.send({"accept": True})
         Group("chat").add(message.reply_channel)
 
     # Connected to websocket.receive
@@ -222,6 +228,13 @@ And what our routing should look like in ``routing.py``::
         route("websocket.disconnect", ws_disconnect),
     ]
 
+Note that the ``http.request`` route is no longer present - if we leave it
+out, then Django will route HTTP requests to the normal view system by default,
+which is probably what you want. Even if you have a ``http.request`` route that
+matches just a subset of paths or methods, the ones that don't match will still
+fall through to the default handler, which passes it into URL routing and the
+views.
+
 With all that code, you now have a working set of a logic for a chat server.
 Test time! Run ``runserver``, open a browser and use that same JavaScript
 code in the developer console as before::
@@ -235,6 +248,8 @@ code in the developer console as before::
     socket.onopen = function() {
         socket.send("hello world");
     }
+    // Call onopen directly if socket is already open
+    if (socket.readyState == WebSocket.OPEN) socket.onopen();
 
 You should see an alert come back immediately saying "hello world" - but this
 time, you can open another tab and do the same there, and both tabs will
@@ -357,6 +372,8 @@ name in the path of your WebSocket request (we'll ignore auth for now - that's n
     # Connected to websocket.connect
     @channel_session
     def ws_connect(message):
+        # Accept connection
+        message.reply_channel.send({"accept": True})
         # Work out room name from path (ignore slashes)
         room = message.content['path'].strip("/")
         # Save room in session and add us to the group
@@ -423,7 +440,7 @@ Django authentication relies on).
 
 Channels can use Django sessions either from cookies (if you're running your
 websocket server on the same port as your main site, using something like Daphne),
-or from a ``session_key`` GET parameter, which is works if you want to keep
+or from a ``session_key`` GET parameter, which works if you want to keep
 running your HTTP requests through a WSGI server and offload WebSockets to a
 second server process on another port.
 
@@ -451,11 +468,13 @@ chat to people with the same first letter of their username::
     # In consumers.py
     from channels import Channel, Group
     from channels.sessions import channel_session
-    from channels.auth import http_session_user, channel_session_user, channel_session_user_from_http
+    from channels.auth import channel_session_user, channel_session_user_from_http
 
     # Connected to websocket.connect
     @channel_session_user_from_http
     def ws_add(message):
+        # Accept connection
+        message.reply_channel.send({"accept": True})
         # Add them to the right group
         Group("chat-%s" % message.user.username[0]).add(message.reply_channel)
 
@@ -506,7 +525,7 @@ routing our chat from above::
     ]
 
     chat_routing = [
-        route("websocket.connect", chat_connect, path=r"^/(?P<room>[a-zA-Z0-9_]+)/$),
+        route("websocket.connect", chat_connect, path=r"^/(?P<room>[a-zA-Z0-9_]+)/$"),
         route("websocket.disconnect", chat_disconnect),
     ]
 
@@ -571,8 +590,9 @@ have a ChatMessage model with ``message`` and ``room`` fields::
     # Connected to chat-messages
     def msg_consumer(message):
         # Save to model
+        room = message.content['room']
         ChatMessage.objects.create(
-            room=message.content['room'],
+            room=room,
             message=message.content['message'],
         )
         # Broadcast to listening sockets
@@ -594,7 +614,7 @@ have a ChatMessage model with ``message`` and ``room`` fields::
     def ws_message(message):
         # Stick the message onto the processing queue
         Channel("chat-messages").send({
-            "room": channel_session['room'],
+            "room": message.channel_session['room'],
             "message": message['text'],
         })
 
@@ -620,77 +640,63 @@ sites with Channels - consumer ordering.
 
 Because Channels is a distributed system that can have many workers, by default
 it just processes messages in the order the workers get them off the queue.
-It's entirely feasible for a WebSocket interface server to send out a ``connect``
-and a ``receive`` message close enough together that a second worker will pick
-up and start processing the ``receive`` message before the first worker has
-finished processing the ``connect`` worker.
+It's entirely feasible for a WebSocket interface server to send out two
+``receive`` messages close enough together that a second worker will pick
+up and start processing the second message before the first worker has
+finished processing the first.
 
 This is particularly annoying if you're storing things in the session in the
-``connect`` consumer and trying to get them in the ``receive`` consumer - because
+one consumer and trying to get them in the other consumer - because
 the ``connect`` consumer hasn't exited, its session hasn't saved. You'd get the
 same effect if someone tried to request a view before the login view had finished
-processing, but there you're not expecting that page to run after the login,
-whereas you'd naturally expect ``receive`` to run after ``connect``.
+processing, of course, but HTTP requests usually come in a bit slower from clients.
 
 Channels has a solution - the ``enforce_ordering`` decorator. All WebSocket
 messages contain an ``order`` key, and this decorator uses that to make sure that
-messages are consumed in the right order, in one of two modes:
-
-* Slight ordering: Message 0 (``websocket.connect``) is done first, all others
-  are unordered
-
-* Strict ordering: All messages are consumed strictly in sequence
+messages are consumed in the right order. In addition, the ``connect`` message
+blocks the socket opening until it's responded to, so you are always guaranteed
+that ``connect`` will run before any ``receives`` even without the decorator.
 
 The decorator uses ``channel_session`` to keep track of what numbered messages
 have been processed, and if a worker tries to run a consumer on an out-of-order
 message, it raises the ``ConsumeLater`` exception, which puts the message
 back on the channel it came from and tells the worker to work on another message.
 
-There's a cost to using ``enforce_ordering``, which is why it's an optional
-decorator, and the cost is much greater in *strict* mode than it is in
-*slight* mode. Generally you'll want to use *slight* mode for most session-based WebSocket
-and other "continuous protocol" things. Here's an example, improving our
-first-letter-of-username chat from earlier::
+There's a high cost to using ``enforce_ordering``, which is why it's an optional
+decorator. Here's an example of it being used::
 
     # In consumers.py
     from channels import Channel, Group
     from channels.sessions import channel_session, enforce_ordering
-    from channels.auth import http_session_user, channel_session_user, channel_session_user_from_http
+    from channels.auth import channel_session_user, channel_session_user_from_http
 
     # Connected to websocket.connect
-    @enforce_ordering(slight=True)
     @channel_session_user_from_http
     def ws_add(message):
+        # This doesn't need a decorator - it always runs separately
+        message.channel_session['sent'] = 0
         # Add them to the right group
-        Group("chat-%s" % message.user.username[0]).add(message.reply_channel)
+        Group("chat").add(message.reply_channel)
+        # Accept the socket
+        message.reply_channel.send({"accept": True})
 
     # Connected to websocket.receive
-    @enforce_ordering(slight=True)
+    @enforce_ordering
     @channel_session_user
     def ws_message(message):
-        Group("chat-%s" % message.user.username[0]).send({
-            "text": message['text'],
+        # Without enforce_ordering this wouldn't work right
+        message.channel_session['sent'] = message.channel_session['sent'] + 1
+        Group("chat").send({
+            "text": "%s: %s" % (message.channel_session['sent'], message['text']),
         })
 
     # Connected to websocket.disconnect
-    @enforce_ordering(slight=True)
     @channel_session_user
     def ws_disconnect(message):
-        Group("chat-%s" % message.user.username[0]).discard(message.reply_channel)
-
-Slight ordering does mean that it's possible for a ``disconnect`` message to
-get processed before a ``receive`` message, but that's fine in this case;
-the client is disconnecting anyway, they don't care about those pending messages.
-
-Strict ordering is the default as it's the most safe; to use it, just call
-the decorator without arguments::
-
-    @enforce_ordering
-    def ws_message(message):
-        ...
+        Group("chat").discard(message.reply_channel)
 
 Generally, the performance (and safety) of your ordering is tied to your
-session backend's performance. Make sure you choose session backend wisely
+session backend's performance. Make sure you choose a session backend wisely
 if you're going to rely heavily on ``enforce_ordering``.
 
 

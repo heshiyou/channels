@@ -33,6 +33,7 @@ The three default routing objects are:
 * ``include``: Takes either a list or string import path to a routing list,
   and optional filter keyword arguments.
 
+.. _filters:
 
 Filters
 -------
@@ -54,7 +55,7 @@ You can have multiple filters::
 Multiple filters are always combined with logical AND; that is, you need to
 match every filter to have the consumer called.
 
-Filters can capture keyword arguments to be passed to your function::
+Filters can capture keyword arguments to be passed to your function or your class based consumer methods as a ``kwarg``::
     
     route("websocket.connect", connect_blog, path=r'^/liveblog/(?P<slug>[^/]+)/stream/$')
 

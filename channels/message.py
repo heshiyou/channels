@@ -1,7 +1,10 @@
 from __future__ import unicode_literals
+
 import copy
+import threading
 
 from .channel import Channel
+from .signals import consumer_finished, consumer_started
 
 
 class Message(object):
@@ -37,6 +40,15 @@ class Message(object):
     def __contains__(self, key):
         return key in self.content
 
+    def keys(self):
+        return self.content.keys()
+
+    def values(self):
+        return self.content.values()
+
+    def items(self):
+        return self.content.items()
+
     def get(self, key, default=None):
         return self.content.get(key, default)
 
@@ -49,3 +61,39 @@ class Message(object):
             self.channel.name,
             self.channel_layer,
         )
+
+
+class PendingMessageStore(object):
+    """
+    Singleton object used for storing pending messages that should be sent
+    to a channel or group when a consumer finishes.
+    """
+
+    threadlocal = threading.local()
+
+    def prepare(self, **kwargs):
+        """
+        Sets the message store up to receive messages.
+        """
+        self.threadlocal.messages = []
+
+    @property
+    def active(self):
+        """
+        Returns if the pending message store can be used or not
+        (it can only be used inside consumers)
+        """
+        return hasattr(self.threadlocal, "messages")
+
+    def append(self, sender, message):
+        self.threadlocal.messages.append((sender, message))
+
+    def send_and_flush(self, **kwargs):
+        for sender, message in getattr(self.threadlocal, "messages", []):
+            sender.send(message, immediately=True)
+        delattr(self.threadlocal, "messages")
+
+
+pending_message_store = PendingMessageStore()
+consumer_started.connect(pending_message_store.prepare)
+consumer_finished.connect(pending_message_store.send_and_flush)

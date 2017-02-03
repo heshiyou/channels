@@ -1,15 +1,11 @@
 from __future__ import unicode_literals
 
 import os
-import unittest
 from datetime import datetime
 from itertools import islice
 
-from django.http import (
-    FileResponse, HttpResponse, HttpResponseRedirect, JsonResponse,
-    StreamingHttpResponse,
-)
-from six import BytesIO, StringIO
+from django.http import FileResponse, HttpResponse, HttpResponseRedirect, JsonResponse, StreamingHttpResponse
+from six import BytesIO
 
 from channels import Channel
 from channels.handler import AsgiHandler
@@ -142,6 +138,54 @@ class HandlerTests(ChannelTestCase):
         self.assertEqual(reply_messages[0]["more_content"], True)
         self.assertEqual(reply_messages[1]["content"], b"andhereistherest")
         self.assertEqual(reply_messages[1].get("more_content", False), False)
+
+    def test_empty(self):
+        """
+        Tests an empty response
+        """
+        # Make stub request and desired response
+        Channel("test").send({
+            "reply_channel": "test",
+            "http_version": "1.1",
+            "method": "GET",
+            "path": b"/test/",
+        })
+        response = HttpResponse(b"", status=304)
+        # Run the handler
+        handler = FakeAsgiHandler(response)
+        reply_messages = list(
+            handler(self.get_next_message("test", require=True))
+        )
+        # Make sure we got the right number of messages
+        self.assertEqual(len(reply_messages), 1)
+        # Make sure the messages look correct
+        self.assertEqual(reply_messages[0].get("content", b""), b"")
+        self.assertEqual(reply_messages[0]["status"], 304)
+        self.assertEqual(reply_messages[0]["more_content"], False)
+
+    def test_empty_streaming(self):
+        """
+        Tests an empty streaming response
+        """
+        # Make stub request and desired response
+        Channel("test").send({
+            "reply_channel": "test",
+            "http_version": "1.1",
+            "method": "GET",
+            "path": b"/test/",
+        })
+        response = StreamingHttpResponse([], status=304)
+        # Run the handler
+        handler = FakeAsgiHandler(response)
+        reply_messages = list(
+            handler(self.get_next_message("test", require=True))
+        )
+        # Make sure we got the right number of messages
+        self.assertEqual(len(reply_messages), 1)
+        # Make sure the messages look correct
+        self.assertEqual(reply_messages[0].get("content", b""), b"")
+        self.assertEqual(reply_messages[0]["status"], 304)
+        self.assertEqual(reply_messages[0]["more_content"], False)
 
     def test_chunk_bytes(self):
         """
@@ -309,18 +353,3 @@ class HandlerTests(ChannelTestCase):
             self.assertEqual(reply_messages[0]['status'], 302)
             header_dict = dict(reply_messages[0]['headers'])
             self.assertEqual(header_dict[b'Location'].decode(), redirect_to)
-
-    @unittest.skip("failing under python 3")
-    def test_stringio_file_response(self):
-        Channel("test").send({
-            "reply_channel": "test",
-            "http_version": "1.1",
-            "method": "GET",
-            "path": b"/test/",
-        })
-        response = FileResponse(StringIO('sadfdasfsdfsadf'))
-        handler = FakeAsgiHandler(response)
-        # Use islice because the generator never ends.
-        reply_messages = list(
-            islice(handler(self.get_next_message("test", require=True)), 5))
-        self.assertEqual(len(reply_messages), 2, reply_messages)

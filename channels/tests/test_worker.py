@@ -1,15 +1,18 @@
 from __future__ import unicode_literals
 
+import threading
+
+from channels import DEFAULT_CHANNEL_LAYER, Channel, route
+from channels.asgi import channel_layers
+from channels.exceptions import ConsumeLater
+from channels.signals import worker_ready
+from channels.tests import ChannelTestCase
+from channels.worker import Worker, WorkerGroup
+
 try:
     from unittest import mock
 except ImportError:
     import mock
-
-from channels import Channel, route, DEFAULT_CHANNEL_LAYER
-from channels.asgi import channel_layers
-from channels.tests import ChannelTestCase
-from channels.worker import Worker
-from channels.exceptions import ConsumeLater
 
 
 class PatchedWorker(Worker):
@@ -66,7 +69,7 @@ class WorkerTests(ChannelTestCase):
             if _consumer._call_count == 1:
                 raise ConsumeLater()
 
-        Channel('test').send({'test': 'test'})
+        Channel('test').send({'test': 'test'}, immediately=True)
         channel_layer = channel_layers[DEFAULT_CHANNEL_LAYER]
         channel_layer.router.add_route(route('test', _consumer))
         old_send = channel_layer.send
@@ -81,7 +84,7 @@ class WorkerTests(ChannelTestCase):
 
     def test_normal_run(self):
         consumer = mock.Mock()
-        Channel('test').send({'test': 'test'})
+        Channel('test').send({'test': 'test'}, immediately=True)
         channel_layer = channel_layers[DEFAULT_CHANNEL_LAYER]
         channel_layer.router.add_route(route('test', consumer))
         old_send = channel_layer.send
@@ -93,3 +96,42 @@ class WorkerTests(ChannelTestCase):
         worker.run()
         self.assertEqual(consumer.call_count, 1)
         self.assertEqual(channel_layer.send.call_count, 0)
+
+
+class WorkerGroupTests(ChannelTestCase):
+    """
+    Test threaded workers.
+    """
+
+    def setUp(self):
+        self.channel_layer = channel_layers[DEFAULT_CHANNEL_LAYER]
+        self.worker = WorkerGroup(self.channel_layer, n_threads=4)
+        self.subworkers = self.worker.workers
+
+    def test_subworkers_created(self):
+        self.assertEqual(len(self.subworkers), 3)
+
+    def test_subworkers_no_sigterm(self):
+        for wrk in self.subworkers:
+            self.assertFalse(wrk.signal_handlers)
+
+    def test_ready_signals_sent(self):
+        self.in_signal = 0
+
+        def handle_signal(sender, *args, **kwargs):
+            self.in_signal += 1
+
+        worker_ready.connect(handle_signal)
+        WorkerGroup(self.channel_layer, n_threads=4)
+        self.worker.ready()
+        self.assertEqual(self.in_signal, 4)
+
+    def test_sigterm_handler(self):
+        threads = []
+        for wkr in self.subworkers:
+            t = threading.Thread(target=wkr.run)
+            t.start()
+            threads.append(t)
+        self.worker.sigterm_handler(None, None)
+        for t in threads:
+            t.join()

@@ -1,5 +1,9 @@
 from __future__ import unicode_literals
 
+from ..auth import channel_session_user
+from ..routing import route_class
+from ..sessions import channel_session
+
 
 class BaseConsumer(object):
     """
@@ -15,6 +19,8 @@ class BaseConsumer(object):
     """
 
     method_mapping = {}
+    channel_session = False
+    channel_session_user = False
 
     def __init__(self, message, **kwargs):
         """
@@ -22,6 +28,7 @@ class BaseConsumer(object):
         the uninstantiated class, so calling it creates it)
         """
         self.message = message
+        self.kwargs = kwargs
         self.dispatch(message, **kwargs)
 
     @classmethod
@@ -32,11 +39,29 @@ class BaseConsumer(object):
         """
         return set(cls.method_mapping.keys())
 
+    @classmethod
+    def as_route(cls, attrs=None, **kwargs):
+        """
+        Shortcut function to create route with filters (kwargs)
+        to direct to a class-based consumer with given class attributes (attrs)
+        """
+        _cls = cls
+        if attrs:
+            assert isinstance(attrs, dict), 'attrs must be a dict'
+            _cls = type(cls.__name__, (cls,), attrs)
+        return route_class(_cls, **kwargs)
+
     def get_handler(self, message, **kwargs):
         """
         Return handler uses method_mapping to return the right method to call.
         """
-        return getattr(self, self.method_mapping[message.channel.name])
+        handler = getattr(self, self.method_mapping[message.channel.name])
+        if self.channel_session_user:
+            return channel_session_user(handler)
+        elif self.channel_session:
+            return channel_session(handler)
+        else:
+            return handler
 
     def dispatch(self, message, **kwargs):
         """
